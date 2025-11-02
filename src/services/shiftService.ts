@@ -2,9 +2,18 @@ import { supabase, Shift, NewShift, SalaryPayment, isSupabaseConfigured } from '
 import type { MonthlyActuals, NewMonthlyActuals } from '../lib/supabase';
 
 // Получаем текущего пользователя
-const getCurrentUser = async () => {
-  // For now, return null since we're back to single-user mode
-  return null;
+const getCurrentUserId = async (): Promise<string | null> => {
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error || !user) {
+      console.error('Error getting current user:', error);
+      return null;
+    }
+    return user.id;
+  } catch (error) {
+    console.error('Error getting current user:', error);
+    return null;
+  }
 };
 
 export class ShiftService {
@@ -14,9 +23,15 @@ export class ShiftService {
       return [];
     }
     
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+    
     const { data, error } = await supabase
       .from('shifts')
       .select('*')
+      .eq('user_id', userId)
       .order('date', { ascending: false });
 
     if (error) {
@@ -31,6 +46,11 @@ export class ShiftService {
       return [];
     }
 
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
     const lastDay = new Date(year, month, 0).getDate();
     const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
@@ -38,6 +58,7 @@ export class ShiftService {
     const { data, error } = await supabase
       .from('shifts')
       .select('*')
+      .eq('user_id', userId)
       .gte('date', startDate)
       .lte('date', endDate)
       .order('date', { ascending: true });
@@ -54,9 +75,15 @@ export class ShiftService {
       return [];
     }
     
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+    
     const { data, error } = await supabase
       .from('shifts')
       .select('*')
+      .eq('user_id', userId)
       .eq('date', date)
       .order('created_at', { ascending: false });
 
@@ -73,9 +100,14 @@ export class ShiftService {
       return null;
     }
     
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+    
     const { data, error } = await supabase
       .from('shifts')
-      .insert([shift])
+      .insert([{ ...shift, user_id: userId }])
       .select()
       .single();
 
@@ -92,10 +124,16 @@ export class ShiftService {
       return null;
     }
     
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+    
     const { data, error } = await supabase
       .from('shifts')
       .update(shift)
       .eq('id', id)
+      .eq('user_id', userId)
       .select()
       .single();
 
@@ -112,10 +150,16 @@ export class ShiftService {
       return false;
     }
     
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+    
     const { error } = await supabase
       .from('shifts')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', userId);
 
     if (error) {
       throw new Error(`Failed to delete shift: ${error.message}`);
@@ -226,10 +270,15 @@ export class ShiftService {
       return null;
     }
 
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
 
     const { data, error } = await supabase
       .from('salary_payments')
       .select('*')
+      .eq('user_id', userId)
       .eq('month', month)
       .maybeSingle();
 
@@ -245,10 +294,17 @@ export class ShiftService {
       return null;
     }
 
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
 
+    // Use onConflict to handle upsert with composite unique key (user_id, month)
     const { data, error } = await supabase
       .from('salary_payments')
-      .upsert([payment])
+      .upsert([{ ...payment, user_id: userId }], {
+        onConflict: 'user_id,month'
+      })
       .select()
       .single();
 
@@ -265,9 +321,15 @@ export class ShiftService {
       return null;
     }
 
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+
     const { data, error } = await supabase
       .from('monthly_actuals')
       .select('*')
+      .eq('user_id', userId)
       .eq('month', month)
       .maybeSingle();
 
@@ -283,21 +345,30 @@ export class ShiftService {
       return null;
     }
 
+    const userId = await getCurrentUserId();
+    if (!userId) {
+      throw new Error('User not authenticated');
+    }
+
     // First, get existing data
     const existing = await this.getMonthlyActuals(actuals.month);
 
     // Merge with existing data, only updating fields that are provided
     const merged = {
       month: actuals.month,
+      user_id: userId,
       actual_revenue: actuals.actual_revenue !== undefined ? actuals.actual_revenue : (existing?.actual_revenue || 0),
       actual_advance: actuals.actual_advance !== undefined ? actuals.actual_advance : (existing?.actual_advance || 0),
       actual_salary: actuals.actual_salary !== undefined ? actuals.actual_salary : (existing?.actual_salary || 0),
       updated_at: new Date().toISOString()
     };
 
+    // Use onConflict to handle upsert with composite unique key (user_id, month)
     const { data, error } = await supabase
       .from('monthly_actuals')
-      .upsert([merged])
+      .upsert([merged], {
+        onConflict: 'user_id,month'
+      })
       .select()
       .single();
 

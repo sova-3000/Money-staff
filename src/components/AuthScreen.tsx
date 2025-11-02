@@ -53,20 +53,114 @@ export function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       setLoading(true);
       setError(null);
       
+      // CRITICAL: redirectTo MUST match exactly with:
+      // 1. The redirect URL configured in Supabase Dashboard (Authentication → URL Configuration)
+      // 2. The redirect URL in Google Cloud Console (OAuth 2.0 Client → Authorized redirect URIs)
+      // 
+      // For Supabase OAuth, the redirect URL should be:
+      // - Your app URL (window.location.origin)
+      // - Supabase will append the callback to this URL
+      // - The 'state' parameter is stored in sessionStorage by Supabase client and validated on return
+      const redirectUrl = window.location.origin;
+      console.log('🔵 Starting Google OAuth');
+      console.log('📍 Redirect URL:', redirectUrl);
+      console.log('📍 Current URL:', window.location.href);
+      
+      // PKCE FLOW EXPLANATION:
+      // When signInWithOAuth is called with flowType: 'pkce', Supabase SDK:
+      //
+      // STEP 1: BEFORE REDIRECT (this function)
+      // - Generates a random code_verifier (43-128 character string)
+      // - Creates code_challenge = SHA256(code_verifier) encoded as base64url
+      // - Generates state parameter (CSRF token)
+      // - Stores code_verifier in sessionStorage under key: sb-{project-ref}-auth-code-verifier-{id}
+      // - Stores state in sessionStorage under key: sb-{project-ref}-auth-token
+      // - Redirects to Google OAuth with code_challenge and state in URL
+      //
+      // STEP 2: GOOGLE OAUTH
+      // - User authenticates with Google
+      // - Google redirects back to Supabase callback with authorization code
+      //
+      // STEP 3: SUPABASE CALLBACK
+      // - Supabase receives code from Google
+      // - Supabase redirects to your app with code in query: ?code=...
+      //
+      // STEP 4: YOUR APP CALLBACK (detectSessionInUrl: true)
+      // - Supabase SDK detects code in URL automatically
+      // - Extracts code_verifier from sessionStorage (stored in STEP 1)
+      // - Sends POST to /auth/v1/token with:
+      //   * grant_type=pkce
+      //   * code (from URL)
+      //   * code_verifier (from sessionStorage)
+      // - Supabase validates and exchanges for access_token + refresh_token
+      // - Sets session and fires SIGNED_IN event
+      //
+      // IF code_verifier is missing from sessionStorage → "Invalid API key" error
+      
+      // Debug: Check sessionStorage before OAuth redirect
+      console.log('🔍 Checking sessionStorage before OAuth...');
+      const storageKeysBefore = Object.keys(sessionStorage);
+      console.log('📦 Storage keys before OAuth:', storageKeysBefore.length);
+      
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.origin,
+          // This redirectTo should be exactly: http://localhost:5173 (for dev)
+          // Or your production URL. Supabase will handle adding callback params
+          redirectTo: redirectUrl,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+          // Skip browser redirect for testing (not needed here, but useful to know)
+          // skipBrowserRedirect: false,
         }
       });
 
       if (error) {
+        console.error('❌ OAuth initialization error:', error);
         throw error;
       }
 
+      // After signInWithOAuth, Supabase has:
+      // - Generated code_verifier
+      // - Stored it in sessionStorage
+      // - Generated code_challenge
+      // - Created OAuth URL with code_challenge
+      // - Stored state parameter
+      
+      // Debug: Verify code_verifier was stored
+      setTimeout(() => {
+        const storageKeysAfter = Object.keys(sessionStorage);
+        const codeVerifierKeys = storageKeysAfter.filter(key => key.includes('code-verifier'));
+        console.log('🔍 Code verifier keys after OAuth init:', codeVerifierKeys);
+        if (codeVerifierKeys.length > 0) {
+          console.log('✅ Code verifier stored successfully - PKCE flow ready');
+        } else {
+          console.error('❌ Code verifier NOT stored - PKCE will fail on return!');
+        }
+      }, 100);
+
+      // data.url contains the full OAuth URL with:
+      // - code_challenge (derived from code_verifier)
+      // - state parameter
+      // - redirect_uri pointing to Supabase callback
+      console.log('✅ OAuth redirect URL generated:', data?.url ? 'Success' : 'Failed');
+      
+      if (data?.url) {
+        console.log('🔗 Redirecting to Google OAuth...');
+        console.log('📝 Code verifier is stored in sessionStorage and will be used on callback');
+        // Supabase will automatically redirect to data.url
+        // The code_verifier in sessionStorage will be automatically used when code returns
+      }
+      
+      // OAuth redirect will happen automatically via window.location = data.url
+      // Don't set loading to false here - we'll be redirected
+      // sessionStorage should NOT be cleared during redirect to preserve state
       tg?.HapticFeedback?.notificationOccurred('success');
     } catch (error: any) {
-      console.error('Auth error:', error);
+      console.error('❌ Auth error:', error);
+      setLoading(false);
       let errorMessage = 'Ошибка входа';
       
       if (error.message?.includes('Invalid login credentials')) {
@@ -77,14 +171,14 @@ export function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
         errorMessage = 'Слишком много попыток. Попробуйте позже';
       } else if (error.message?.includes('Network')) {
         errorMessage = 'Проблема с подключением к интернету';
+      } else if (error.message?.includes('state')) {
+        errorMessage = 'Ошибка авторизации: потерян параметр состояния. Проверьте настройки браузера (не используйте режим инкогнито).';
       } else if (error.message) {
         errorMessage = error.message;
       }
       
       setError(errorMessage);
       tg?.HapticFeedback?.notificationOccurred('error');
-    } finally {
-      setLoading(false);
     }
   };
 
